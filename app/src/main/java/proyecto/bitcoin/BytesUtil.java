@@ -1,4 +1,10 @@
-    static void require(boolean cond, String msg) {
+package proyecto.bitcoin;
+
+import java.nio.charset.StandardCharsets;
+
+// Helpers de bytes y conversiones para el prototipo
+public class BytesUtil {
+static void require(boolean cond, String msg) {
         if (!cond) throw new RuntimeException("Error de Script: " + msg);
     }
 
@@ -139,4 +145,6 @@
             }
         }
         System.out.println("]");
+
     }
+}
