@@ -4,149 +4,484 @@ import java.util.ArrayDeque;
 import java.util.Arrays;
 import java.util.Deque;
 
-// Evaluador de Script: maquina de pila con opcodes minimos
+/**
+ * Intérprete de un subconjunto de Bitcoin Script.
+ *
+ * El evaluador procesa tokens de izquierda a derecha usando una pila principal.
+ * El programa es válido si termina sin errores y la cima final de la pila es verdadera.</p>
+ */
 public class ScriptEngine {
 
-    static void require(boolean cond, String msg) {
-        if (!cond) throw new RuntimeException("Error de Script: " + msg);
+    private final boolean traceEnabled;
+
+    /**
+     * Crea un nuevo intérprete.
+     *
+     * @param traceEnabled true para imprimir el estado de la pila en cada paso
+     */
+    public ScriptEngine(boolean traceEnabled) {
+        this.traceEnabled = traceEnabled;
     }
 
-    static byte[] pop(Deque<byte[]> st) {
-        require(!st.isEmpty(), "la pila esta vacia");
-        return st.removeLast();
-    }
-
-    static void push(Deque<byte[]> st, byte[] v) {
-        st.addLast(v);
-    }
-
-    // Ejecuta el programa (tokens separados por espacios)
-    // Retorna true si la pila final termina con TRUE (1)
-    public static boolean eval(String program, boolean trace) {
+    /**
+     * Evalúa un programa Bitcoin Script.
+     *
+     * @param program programa separado por espacios
+     * @return true si la ejecución finaliza correctamente y la cima de la pila es verdadera
+     */
+    public boolean eval(String program) {
         Deque<byte[]> stack = new ArrayDeque<>();
+        Deque<Boolean> executionStack = new ArrayDeque<>();
 
-        String[] t = program.trim().isEmpty() ? new String[0] : program.trim().split("\\s+");
-        for (int i = 0; i < t.length; i++) {
-            String tok = t[i];
+        String[] tokens = tokenize(program);
 
-            // Literales numericos 1..16 
-            if (tok.matches("\\d+")) {
-                int n = Integer.parseInt(tok);
-                push(stack, BytesUtil.encodeInt(n));
-                if (trace) dump("PUSH_NUM(" + n + ")", stack);
+        for (int index = 0; index < tokens.length; index++) {
+            String token = tokens[index];
+
+            if (isControlFlowToken(token)) {
+                index = processControlFlowToken(tokens, index, token, stack, executionStack);
                 continue;
             }
 
-            // PUSHDATA <dato>  (si <dato> es hex, lo decodifica a bytes)
-            if (tok.equalsIgnoreCase("PUSHDATA")) {
-                require(i + 1 < t.length, "PUSHDATA sin dato");
-                String data = t[++i];
-
-                // si parece hex (solo 0-9a-f y longitud par), lo convertimos a bytes
-                if (data.matches("(?i)[0-9a-f]+") && (data.length() % 2 == 0)) {
-                    push(stack, BytesUtil.fromHex(data));
-                } else {
-                    push(stack, BytesUtil.bytes(data));
-                }
-
-                if (trace) dump("PUSHDATA(" + data + ")", stack);
+            if (!shouldExecute(executionStack)) {
                 continue;
             }
 
-            // Si viene como <algo> lo tratamos como dato directo (estilo script)
-            if (tok.startsWith("<") && tok.endsWith(">") && tok.length() >= 2) {
-                String data = tok.substring(1, tok.length() - 1);
-                push(stack, BytesUtil.bytes(data));
-                if (trace) dump("PUSH_DATA(<" + data + ">)", stack);
+            if (isNumericLiteral(token)) {
+                push(stack, BytesUtil.encodeInt(Integer.parseInt(token)));
+                trace(token, stack);
                 continue;
             }
 
-            // Opcodes minimos
-            switch (tok) {
-                case "OP_0":
-                case "OP_FALSE":
-                    push(stack, BytesUtil.encodeInt(0));
-                    if (trace) dump(tok, stack);
-                    break;
-
-                default:
-                    // OP_1..OP_16
-                    if (tok.startsWith("OP_")) {
-                        String rest = tok.substring(3);
-                        if (rest.matches("\\d+")) {
-                            int n = Integer.parseInt(rest);
-                            require(n >= 1 && n <= 16, "OP_" + n + " fuera del rango 1..16");
-                            push(stack, BytesUtil.encodeInt(n));
-                            if (trace) dump(tok, stack);
-                            break;
-                        }
-                    }
-
-                    if (tok.equals("OP_DUP")) {
-                        byte[] a = pop(stack);
-                        push(stack, a);
-                        push(stack, a); // duplicamos referencia (suficiente para prototipo)
-                        if (trace) dump(tok, stack);
-
-                    } else if (tok.equals("OP_DROP")) {
-                        pop(stack);
-                        if (trace) dump(tok, stack);
-
-                    } else if (tok.equals("OP_EQUAL")) {
-                        byte[] b = pop(stack);
-                        byte[] a = pop(stack);
-                        boolean eq = Arrays.equals(a, b);
-                        push(stack, BytesUtil.encodeInt(eq ? 1 : 0));
-                        if (trace) dump(tok, stack);
-
-                    } else if (tok.equals("OP_EQUALVERIFY")) {
-                        byte[] b = pop(stack);
-                        byte[] a = pop(stack);
-                        require(Arrays.equals(a, b), "OP_EQUALVERIFY fallo");
-                        if (trace) dump(tok, stack);
-
-                    } else if (tok.equals("OP_HASH160")) {
-                        byte[] a = pop(stack);
-                        push(stack, CryptoMock.hash160Mock(a));
-                        if (trace) dump(tok, stack);
-
-                    } else if (tok.equals("OP_CHECKSIG")) {
-                        // Orden: ... <sig> <pubKey> OP_CHECKSIG
-                        byte[] pubKey = pop(stack);
-                        byte[] sig = pop(stack);
-                        boolean ok = CryptoMock.checkSigMock(sig, pubKey);
-                        push(stack, BytesUtil.encodeInt(ok ? 1 : 0));
-                        if (trace) dump(tok, stack);
-
-                    } else {
-                        throw new RuntimeException("Opcode/token no soportado en prototipo: " + tok);
-                    }
-                    break;
+            if ("PUSHDATA".equalsIgnoreCase(token)) {
+                validate(index + 1 < tokens.length, "PUSHDATA sin dato asociado.");
+                String dataToken = tokens[++index];
+                push(stack, parseDataToken(dataToken));
+                trace("PUSHDATA " + dataToken, stack);
+                continue;
             }
+
+            if (isBracketedData(token)) {
+                push(stack, parseDataToken(token));
+                trace(token, stack);
+                continue;
+            }
+
+            executeOpcode(token, stack);
+            trace(token, stack);
         }
 
-        // exito si el top stack es "true" y no fallo nada
-        if (trace) dump("END", stack);
-        require(!stack.isEmpty(), "pila final vacia");
+        validate(executionStack.isEmpty(), "Estructura condicional incompleta: falta OP_ENDIF.");
+        validate(!stack.isEmpty(), "La pila final quedó vacía.");
+
         return BytesUtil.castToBool(stack.peekLast());
     }
 
-    // Muestra el stack en cada paso (simple)
-    static void dump(String step, Deque<byte[]> st) {
-        System.out.print(step + " | stack=[");
-        boolean first = true;
-        for (byte[] v : st) {
-            if (!first) System.out.print(", ");
-            first = false;
+    /**
+     * Tokeniza el programa a partir de espacios.
+     *
+     * @param program programa fuente
+     * @return tokens del script
+     */
+    private String[] tokenize(String program) {
+        if (program == null || program.isBlank()) {
+            return new String[0];
+        }
+        return program.trim().split("\\s+");
+    }
 
-            // Si es 1 byte, mostramos como int; si no, mostramos como texto
-            if (v.length == 1) {
-                System.out.print(BytesUtil.decodeInt(v));
-            } else {
-                String s = BytesUtil.asString(v);
-                System.out.print("\"" + s + "\"");
+    /**
+     * Ejecuta un opcode no relacionado con control de flujo.
+     *
+     * @param opcode opcode a ejecutar
+     * @param stack pila principal
+     */
+    private void executeOpcode(String opcode, Deque<byte[]> stack) {
+        switch (opcode) {
+            case "OP_0":
+            case "OP_FALSE":
+                push(stack, BytesUtil.encodeInt(0));
+                break;
+
+            case "OP_1":
+            case "OP_2":
+            case "OP_3":
+            case "OP_4":
+            case "OP_5":
+            case "OP_6":
+            case "OP_7":
+            case "OP_8":
+            case "OP_9":
+            case "OP_10":
+            case "OP_11":
+            case "OP_12":
+            case "OP_13":
+            case "OP_14":
+            case "OP_15":
+            case "OP_16":
+                push(stack, BytesUtil.encodeInt(Integer.parseInt(opcode.substring(3))));
+                break;
+
+            case "OP_DUP":
+                executeDup(stack);
+                break;
+
+            case "OP_DROP":
+                pop(stack);
+                break;
+
+            case "OP_SWAP":
+                executeSwap(stack);
+                break;
+
+            case "OP_OVER":
+                executeOver(stack);
+                break;
+
+            case "OP_EQUAL":
+                executeEqual(stack);
+                break;
+
+            case "OP_EQUALVERIFY":
+                executeEqualVerify(stack);
+                break;
+
+            case "OP_NOT":
+                executeNot(stack);
+                break;
+
+            case "OP_BOOLAND":
+                executeBoolAnd(stack);
+                break;
+
+            case "OP_BOOLOR":
+                executeBoolOr(stack);
+                break;
+
+            case "OP_ADD":
+                executeAdd(stack);
+                break;
+
+            case "OP_SUB":
+                executeSub(stack);
+                break;
+
+            case "OP_NUMEQUALVERIFY":
+                executeNumEqualVerify(stack);
+                break;
+
+            case "OP_LESSTHAN":
+                executeLessThan(stack);
+                break;
+
+            case "OP_GREATERTHAN":
+                executeGreaterThan(stack);
+                break;
+
+            case "OP_LESSTHANOREQUAL":
+                executeLessThanOrEqual(stack);
+                break;
+
+            case "OP_GREATERTHANOREQUAL":
+                executeGreaterThanOrEqual(stack);
+                break;
+
+            case "OP_VERIFY":
+                executeVerify(stack);
+                break;
+
+            case "OP_RETURN":
+                throw new ScriptException("La ejecución falló con OP_RETURN");
+
+            case "OP_SHA256":
+                executeSha256(stack);
+                break;
+
+            case "OP_HASH160":
+                executeHash160(stack);
+                break;
+
+            case "OP_HASH256":
+                executeHash256(stack);
+                break;
+
+            case "OP_CHECKSIG":
+                executeCheckSig(stack);
+                break;
+
+            case "OP_CHECKSIGVERIFY":
+                executeCheckSigVerify(stack);
+                break;
+
+            default:
+                throw new ScriptException("Opcode no soportado: " + opcode);
+        }
+    }
+
+    private void executeDup(Deque<byte[]> stack) {
+        byte[] topElement = pop(stack);
+        push(stack, topElement);
+        push(stack, Arrays.copyOf(topElement, topElement.length));
+    }
+
+    private void executeSwap(Deque<byte[]> stack) {
+        validate(stack.size() >= 2, "OP_SWAP requiere al menos 2 elementos.");
+        byte[] first = pop(stack);
+        byte[] second = pop(stack);
+        push(stack, first);
+        push(stack, second);
+    }
+
+    private void executeOver(Deque<byte[]> stack) {
+        validate(stack.size() >= 2, "OP_OVER requiere al menos 2 elementos.");
+        byte[] top = pop(stack);
+        byte[] second = pop(stack);
+
+        push(stack, second);
+        push(stack, top);
+        push(stack, Arrays.copyOf(second, second.length));
+    }
+
+    private void executeEqual(Deque<byte[]> stack) {
+        byte[] first = pop(stack);
+        byte[] second = pop(stack);
+        push(stack, BytesUtil.encodeInt(Arrays.equals(first, second) ? 1 : 0));
+    }
+
+    private void executeEqualVerify(Deque<byte[]> stack) {
+        byte[] first = pop(stack);
+        byte[] second = pop(stack);
+        validate(Arrays.equals(first, second), "OP_EQUALVERIFY falló.");
+    }
+
+    private void executeNot(Deque<byte[]> stack) {
+        byte[] value = pop(stack);
+        boolean boolValue = BytesUtil.castToBool(value);
+        push(stack, BytesUtil.encodeInt(boolValue ? 0 : 1));
+    }
+
+    private void executeBoolAnd(Deque<byte[]> stack) {
+        boolean first = BytesUtil.castToBool(pop(stack));
+        boolean second = BytesUtil.castToBool(pop(stack));
+        push(stack, BytesUtil.encodeInt((first && second) ? 1 : 0));
+    }
+
+    private void executeBoolOr(Deque<byte[]> stack) {
+        boolean first = BytesUtil.castToBool(pop(stack));
+        boolean second = BytesUtil.castToBool(pop(stack));
+        push(stack, BytesUtil.encodeInt((first || second) ? 1 : 0));
+    }
+
+    private void executeAdd(Deque<byte[]> stack) {
+        int first = popInt(stack);
+        int second = popInt(stack);
+        push(stack, BytesUtil.encodeInt(second + first));
+    }
+
+    private void executeSub(Deque<byte[]> stack) {
+        int first = popInt(stack);
+        int second = popInt(stack);
+        push(stack, BytesUtil.encodeInt(second - first));
+    }
+
+    private void executeNumEqualVerify(Deque<byte[]> stack) {
+        int first = popInt(stack);
+        int second = popInt(stack);
+        validate(first == second, "OP_NUMEQUALVERIFY falló.");
+    }
+
+    private void executeLessThan(Deque<byte[]> stack) {
+        int first = popInt(stack);
+        int second = popInt(stack);
+        push(stack, BytesUtil.encodeInt(second < first ? 1 : 0));
+    }
+
+    private void executeGreaterThan(Deque<byte[]> stack) {
+        int first = popInt(stack);
+        int second = popInt(stack);
+        push(stack, BytesUtil.encodeInt(second > first ? 1 : 0));
+    }
+
+    private void executeLessThanOrEqual(Deque<byte[]> stack) {
+        int first = popInt(stack);
+        int second = popInt(stack);
+        push(stack, BytesUtil.encodeInt(second <= first ? 1 : 0));
+    }
+
+    private void executeGreaterThanOrEqual(Deque<byte[]> stack) {
+        int first = popInt(stack);
+        int second = popInt(stack);
+        push(stack, BytesUtil.encodeInt(second >= first ? 1 : 0));
+    }
+
+    private void executeVerify(Deque<byte[]> stack) {
+        boolean result = BytesUtil.castToBool(pop(stack));
+        validate(result, "OP_VERIFY falló.");
+    }
+
+    private void executeSha256(Deque<byte[]> stack) {
+        byte[] value = pop(stack);
+        push(stack, CryptoMock.sha256(value));
+    }
+
+    private void executeHash160(Deque<byte[]> stack) {
+        byte[] value = pop(stack);
+        push(stack, CryptoMock.hash160(value));
+    }
+
+    private void executeHash256(Deque<byte[]> stack) {
+        byte[] value = pop(stack);
+        push(stack, CryptoMock.hash256(value));
+    }
+
+    private void executeCheckSig(Deque<byte[]> stack) {
+        byte[] publicKey = pop(stack);
+        byte[] signature = pop(stack);
+        boolean valid = CryptoMock.checkSig(signature, publicKey);
+        push(stack, BytesUtil.encodeInt(valid ? 1 : 0));
+    }
+
+    private void executeCheckSigVerify(Deque<byte[]> stack) {
+        byte[] publicKey = pop(stack);
+        byte[] signature = pop(stack);
+        boolean valid = CryptoMock.checkSig(signature, publicKey);
+        validate(valid, "OP_CHECKSIGVERIFY falló.");
+    }
+
+    /**
+     * Procesa tokens de control de flujo.
+     */
+    private int processControlFlowToken(
+            String[] tokens,
+            int currentIndex,
+            String token,
+            Deque<byte[]> stack,
+            Deque<Boolean> executionStack
+    ) {
+        switch (token) {
+            case "OP_IF":
+                if (shouldExecute(executionStack)) {
+                    boolean condition = BytesUtil.castToBool(pop(stack));
+                    executionStack.addLast(condition);
+                } else {
+                    executionStack.addLast(false);
+                }
+                break;
+
+            case "OP_NOTIF":
+                if (shouldExecute(executionStack)) {
+                    boolean condition = BytesUtil.castToBool(pop(stack));
+                    executionStack.addLast(!condition);
+                } else {
+                    executionStack.addLast(false);
+                }
+                break;
+
+            case "OP_ELSE":
+                validate(!executionStack.isEmpty(), "OP_ELSE sin bloque OP_IF/OP_NOTIF.");
+                boolean currentBranch = executionStack.removeLast();
+                boolean parentActive = shouldExecute(executionStack);
+                executionStack.addLast(parentActive && !currentBranch);
+                break;
+
+            case "OP_ENDIF":
+                validate(!executionStack.isEmpty(), "OP_ENDIF sin bloque OP_IF/OP_NOTIF.");
+                executionStack.removeLast();
+                break;
+
+            default:
+                throw new ScriptException("Token de control inválido: " + token);
+        }
+
+        trace(token, stack);
+        return currentIndex;
+    }
+
+    /**
+     * Determina si el intérprete debe ejecutar el token actual.
+     *
+     * @param executionStack pila de condiciones
+     * @return true si el bloque actual está activo
+     */
+    private boolean shouldExecute(Deque<Boolean> executionStack) {
+        for (Boolean currentCondition : executionStack) {
+            if (!currentCondition) {
+                return false;
             }
         }
-        System.out.println("]");
+        return true;
+    }
+
+    private boolean isControlFlowToken(String token) {
+        return "OP_IF".equals(token)
+                || "OP_NOTIF".equals(token)
+                || "OP_ELSE".equals(token)
+                || "OP_ENDIF".equals(token);
+    }
+
+    private boolean isNumericLiteral(String token) {
+        return token.matches("-?\\d+");
+    }
+
+    private boolean isBracketedData(String token) {
+        return token.startsWith("<") && token.endsWith(">") && token.length() >= 2;
+    }
+
+    private byte[] parseDataToken(String token) {
+        String processedToken = token;
+
+        if (isBracketedData(token)) {
+            processedToken = token.substring(1, token.length() - 1);
+        }
+
+        if (processedToken.matches("(?i)[0-9a-f]+") && processedToken.length() % 2 == 0) {
+            return BytesUtil.fromHex(processedToken);
+        }
+
+        return BytesUtil.toBytes(processedToken);
+    }
+
+    private byte[] pop(Deque<byte[]> stack) {
+        validate(!stack.isEmpty(), "La pila está vacía");
+        return stack.removeLast();
+    }
+
+    private int popInt(Deque<byte[]> stack) {
+        try {
+            return BytesUtil.decodeInt(pop(stack));
+        } catch (IllegalArgumentException exception) {
+            throw new ScriptException("Se esperaba un entero codificado en 4 bytes", exception);
+        }
+    }
+
+    private void push(Deque<byte[]> stack, byte[] value) {
+        stack.addLast(value);
+    }
+
+    private void validate(boolean condition, String message) {
+        if (!condition) {
+            throw new ScriptException(message);
+        }
+    }
+
+    private void trace(String step, Deque<byte[]> stack) {
+        if (!traceEnabled) {
+            return;
+        }
+
+        StringBuilder builder = new StringBuilder();
+        builder.append(step).append("stack = [");
+
+        boolean first = true;
+        for (byte[] element : stack) {
+            if (!first) {
+                builder.append(", ");
+            }
+            first = false;
+            builder.append(BytesUtil.toReadableString(element));
+        }
+
+        builder.append("]");
+        System.out.println(builder);
     }
 }
