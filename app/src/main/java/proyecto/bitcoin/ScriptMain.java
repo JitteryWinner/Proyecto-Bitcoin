@@ -28,11 +28,11 @@ public class ScriptMain {
         String validProgram = validScriptSig + " " + scriptPubKey;
         String invalidProgram = invalidScriptSig + " " + scriptPubKey;
 
-        System.out.println("=== DEMO P2PKH VÁLIDO ===");
+        System.out.println(" DEMO P2PKH VÁLIDO");
         boolean validResult = scriptEngine.eval(validProgram);
         System.out.println("Resultado final: " + (validResult ? "VÁLIDO" : "INVÁLIDO"));
 
-        System.out.println("\n=== DEMO P2PKH INVÁLIDO ===");
+        System.out.println("\n DEMO P2PKH INVÁLIDO");
         try {
             boolean invalidResult = scriptEngine.eval(invalidProgram);
             System.out.println("Resultado final: " + (invalidResult ? "VÁLIDO" : "INVÁLIDO"));
@@ -40,7 +40,7 @@ public class ScriptMain {
             System.out.println("La ejecución falló como se esperaba: " + exception.getMessage());
         }
 
-        System.out.println("\n=== DEMO CONDICIONAL ===");
+        System.out.println("\n DEMO CONDICIONAL");
         String conditionalProgram = "1 OP_IF 10 5 OP_ADD 15 OP_NUMEQUALVERIFY OP_ELSE 0 OP_ENDIF 1";
         boolean conditionalResult = scriptEngine.eval(conditionalProgram);
         System.out.println("Resultado final del condicional: " + (conditionalResult ? "VÁLIDO" : "INVÁLIDO"));
